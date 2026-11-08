@@ -1,0 +1,88 @@
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    container_name: ${DB_CONTAINER_NAME:-fire_postgis_db}
+    restart: always
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-geonode_data}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "${LOCAL_POSTGRES_PORT:-5434}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-geonode_data}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - shared_network
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: fire_backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PYTHONPATH: /app:/app/backend
+      PYTHONUNBUFFERED: "1"
+      POSTGRES_DB: ${POSTGRES_DB:-geonode_data}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_PORT: 5432
+      DB_HOST: db
+      GEONODE_DB_HOST: db
+      GEONODE_DB_PORT: 5432
+      GEONODE_DB_USER: ${POSTGRES_USER:-postgres}
+      GEONODE_DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      GEONODE_DB_NAME: ${POSTGRES_DB:-geonode_data}
+      DATABASE_URL: ${CONTAINER_DATABASE_URL:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-geonode_data}}
+      FIRMS_MAP_KEY: ${FIRMS_MAP_KEY:-70e8e413e8f4661fb7479c384395c2f8}
+    volumes:
+      - .:/app
+    networks:
+      - shared_network
+    stdin_open: true
+    tty: true
+
+  # frontend:
+  #   build:
+  #     context: ./frontend
+  #     dockerfile: Dockerfile
+  #   container_name: fire_frontend
+  #   restart: unless-stopped
+  #   ports:
+  #     - "3000:3000"
+  #   depends_on:
+  #     db:
+  #       condition: service_healthy
+  #   environment:
+  #     DB_HOST: ${DB_HOST:-db}
+  #     POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+  #     POSTGRES_USER: ${POSTGRES_USER:-postgres}
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+  #     POSTGRES_DB: ${POSTGRES_DB:-geonode_data}
+  #     DATABASE_URL: ${DATABASE_URL:-}
+  #     NEXT_PUBLIC_CARTO_API_KEY: ${NEXT_PUBLIC_CARTO_API_KEY:-cb1_4rl4_1_b877170eaa644026e39b00c0}
+  #   volumes:
+  #     - ./frontend:/app
+  #     - /app/node_modules
+  #     - /app/.next
+  #   networks:
+  #     - shared_network
+
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  shared_network:
+    driver: bridge
