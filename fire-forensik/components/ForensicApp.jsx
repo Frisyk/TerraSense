@@ -21,6 +21,9 @@ import {
   Eye,
   EyeOff,
   Wind,
+  Camera,
+  Crop,
+  Check,
 } from 'lucide-react';
 import BasemapSelector from './BasemapSelector';
 import WindVectorLayer, { WIND_SPEED_TIERS } from './WindVectorLayer';
@@ -103,6 +106,18 @@ export default function ForensicApp() {
 
   // Tooltip state
   const [tipData, setTipData] = useState(null);
+
+  // Screenshot Export & Crop selection state
+  const [isCropping, setIsCropping] = useState(false);
+  const [cropBox, setCropBox] = useState(null); // { x0, y0, x1, y1 }
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [screenshotPreviewUrl, setScreenshotPreviewUrl] = useState(null);
+  const [screenshotCropBox, setScreenshotCropBox] = useState(null);
+  const [exportWatermark, setExportWatermark] = useState(true);
+  const [exportWind, setExportWind] = useState(true);
+  const [exportScale, setExportScale] = useState(true);
+  const [exportFilename, setExportFilename] = useState('');
+  const cropStartRef = useRef(null);
 
   // Refs for Canvas, Viewport & Tile Cache
   const mapboxRef = useRef(null);
@@ -667,6 +682,9 @@ export default function ForensicApp() {
         setShowDbModal(false);
         setShowLayerPanel(false);
         setShowInfoModal(false);
+        setIsCropping(false);
+        setShowExportModal(false);
+        setCropBox(null);
       }
     };
     document.addEventListener('fullscreenchange', onFs);
@@ -978,11 +996,223 @@ export default function ForensicApp() {
     [draw]
   );
 
+  // Forensic Screenshot Generator & Crop Compositor
+  const generateForensicScreenshot = useCallback(
+    (box = null, customOpts = null) => {
+      const mainCv = canvasRef.current;
+      const windCv = typeof document !== 'undefined' ? document.getElementById('wind-animation-canvas') : null;
+      const { W, Hh, dpr } = sizeRef.current;
+      if (!mainCv || !W || !Hh) return null;
+
+      const opts = {
+        watermark: customOpts?.watermark !== undefined ? customOpts.watermark : exportWatermark,
+        wind: customOpts?.wind !== undefined ? customOpts.wind : exportWind,
+        scale: customOpts?.scale !== undefined ? customOpts.scale : exportScale,
+      };
+
+      const sel = box || screenshotCropBox || { x: 0, y: 0, w: W, h: Hh };
+      const selX = Math.max(0, Math.min(W - 10, sel.x));
+      const selY = Math.max(0, Math.min(Hh - 10, sel.y));
+      const selW = Math.max(20, Math.min(W - selX, sel.w));
+      const selH = Math.max(20, Math.min(Hh - selY, sel.h));
+
+      const headerH = opts.watermark ? 70 : 0;
+      const footerH = opts.watermark || opts.scale ? 38 : 0;
+
+      const exportDpr = Math.max(dpr || 1, 2);
+      const outW = Math.round(selW * exportDpr);
+      const outH = Math.round((selH + headerH + footerH) * exportDpr);
+
+      const outCv = document.createElement('canvas');
+      outCv.width = outW;
+      outCv.height = outH;
+      const ctx = outCv.getContext('2d');
+      if (!ctx) return null;
+
+      ctx.scale(exportDpr, exportDpr);
+
+      // 1. Background dasar gelap
+      ctx.fillStyle = '#080c10';
+      ctx.fillRect(0, 0, selW, selH + headerH + footerH);
+
+      // 2. Gambar area peta terpilih dari main canvas
+      const sx = selX * dpr;
+      const sy = selY * dpr;
+      const sw = selW * dpr;
+      const sh = selH * dpr;
+      ctx.drawImage(mainCv, sx, sy, sw, sh, 0, headerH, selW, selH);
+
+      // 3. Gambar lapisan partikel angin jika aktif
+      if (opts.wind && layers.wind && windCv) {
+        const windDpr = (windCv.width / W) || dpr;
+        ctx.drawImage(
+          windCv,
+          selX * windDpr,
+          selY * windDpr,
+          selW * windDpr,
+          selH * windDpr,
+          0,
+          headerH,
+          selW,
+          selH
+        );
+      }
+
+      // 4. Header Bar Forensik & Metadata
+      if (opts.watermark) {
+        const grad = ctx.createLinearGradient(0, 0, selW, 0);
+        grad.addColorStop(0, '#0d1319');
+        grad.addColorStop(0.5, '#131b24');
+        grad.addColorStop(1, '#0d1319');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, selW, headerH);
+
+        ctx.strokeStyle = 'rgba(255, 91, 31, 0.5)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(0, headerH);
+        ctx.lineTo(selW, headerH);
+        ctx.stroke();
+
+        ctx.font = '700 13px "Bricolage Grotesque", "Segoe UI", sans-serif';
+        ctx.fillStyle = '#ff5b1f';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+        ctx.fillText('TERRASENSE · SISTEM FORENSIK SEBARAN API KALBAR', 14, 11);
+
+        ctx.font = '500 10.5px "IBM Plex Mono", monospace';
+        ctx.fillStyle = '#e6edf3';
+        const curCluster = cur >= 0 && ds && ds.clusters ? ds.clusters[cur] : null;
+        const clusterTxt = curCluster
+          ? `Kluster: ${curCluster.id} (${curCluster.n} hotspot)`
+          : 'Cakupan: Seluruh Kejadian';
+        const timeTxt = curCluster
+          ? `Mulai: ${fmt(curCluster.t0)} WIB`
+          : ds
+          ? `Total: ${ds.clusters.length} kluster`
+          : '';
+        ctx.fillText(`${clusterTxt}  ·  ${timeTxt}`, 14, 29);
+
+        const curW = activeWeatherRef.current;
+        if (curW) {
+          ctx.fillStyle = '#38bdf8';
+          const toCompass = bearing(
+            Math.sin(((curW.wto || 0) * Math.PI) / 180),
+            -Math.cos(((curW.wto || 0) * Math.PI) / 180)
+          ).dir;
+          const windDesc = `Angin: ${curW.ws} m/s arah ${toCompass} (${curW.wto}°) · Suhu ${curW.temp}°C · RH ${curW.rh}% · FWI ${curW.fwi}`;
+          ctx.fillText(windDesc, 14, 47);
+        } else {
+          ctx.fillStyle = '#8b9baa';
+          ctx.fillText('Sensor: VIIRS 375m (SNPP/NOAA-20/21) · Proyeksi PostGIS UTM 49N', 14, 47);
+        }
+
+        ctx.font = '500 9.5px "IBM Plex Mono", monospace';
+        ctx.fillStyle = '#8b9baa';
+        ctx.textAlign = 'right';
+        ctx.fillText('DOKUMEN BUKTI SPASIAL', selW - 14, 12);
+        ctx.fillText(`Cetak: ${new Date().toLocaleString('id-ID')} WIB`, selW - 14, 27);
+        ctx.fillText('Integritas: Monte Carlo Stabilitas', selW - 14, 43);
+      }
+
+      // 5. Footer Bar & Skala Jarak
+      if (opts.watermark || opts.scale) {
+        const footerY = headerH + selH;
+        ctx.fillStyle = '#0a0f14';
+        ctx.fillRect(0, footerY, selW, footerH);
+
+        ctx.strokeStyle = 'rgba(34, 45, 55, 0.85)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(0, footerY);
+        ctx.lineTo(selW, footerY);
+        ctx.stroke();
+
+        if (opts.scale) {
+          const view = viewRef.current;
+          const nice = [100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000];
+          let len = nice[0];
+          nice.forEach((n) => {
+            if (n * view.s <= 110) len = n;
+          });
+          const bw = len * view.s;
+          const bx = 14;
+          const by = footerY + 22;
+
+          ctx.strokeStyle = '#e6edf3';
+          ctx.lineWidth = 1.8;
+          ctx.beginPath();
+          ctx.moveTo(bx, by - 4);
+          ctx.lineTo(bx, by);
+          ctx.lineTo(bx + bw, by);
+          ctx.lineTo(bx + bw, by - 4);
+          ctx.stroke();
+
+          ctx.font = '600 10px "IBM Plex Sans", sans-serif';
+          ctx.fillStyle = '#e6edf3';
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(len >= 1000 ? `${len / 1000} km` : `${len} m`, bx + bw + 8, by - 2);
+          ctx.fillText('↑ U', bx + bw + 55, by - 2);
+        }
+
+        ctx.font = '500 9px "IBM Plex Mono", monospace';
+        ctx.fillStyle = '#8b9baa';
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(
+          'Sumber: NASA FIRMS VIIRS 375m · ECMWF ERA5 Reanalysis · TerraSense Engine',
+          selW - 14,
+          footerY + footerH / 2
+        );
+      }
+
+      const dataUrl = outCv.toDataURL('image/png');
+      setScreenshotPreviewUrl(dataUrl);
+      setScreenshotCropBox(sel);
+      return dataUrl;
+    },
+    [ds, cur, layers.wind, exportWatermark, exportWind, exportScale]
+  );
+
+  const handleOpenExport = useCallback(
+    (box = null) => {
+      const curCluster = cur >= 0 && ds && ds.clusters ? ds.clusters[cur] : null;
+      const cid = curCluster ? curCluster.id : 'kalbar';
+      const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      setExportFilename(`forensik_${cid}_${dateStr}.png`);
+      generateForensicScreenshot(box);
+      setShowExportModal(true);
+    },
+    [cur, ds, generateForensicScreenshot]
+  );
+
+  const handleDownloadScreenshot = () => {
+    if (!screenshotPreviewUrl) return;
+    const a = document.createElement('a');
+    a.href = screenshotPreviewUrl;
+    a.download = exportFilename || 'forensik_tangkapan_layar.png';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setShowExportModal(false);
+  };
+
   // Pointer handlers on canvas
   const handlePointerDown = (e) => {
     const cv = canvasRef.current;
     if (!cv) return;
     cv.setPointerCapture(e.pointerId);
+
+    if (isCropping) {
+      const r = cv.getBoundingClientRect();
+      const mx = e.clientX - r.left;
+      const my = e.clientY - r.top;
+      cropStartRef.current = { x: mx, y: my };
+      setCropBox({ x0: mx, y0: my, x1: mx, y1: my });
+      return;
+    }
+
     dragRef.current = {
       x: e.clientX,
       y: e.clientY,
@@ -992,6 +1222,28 @@ export default function ForensicApp() {
   };
 
   const handlePointerUp = () => {
+    if (isCropping && cropStartRef.current) {
+      const box = cropBox;
+      cropStartRef.current = null;
+      if (box) {
+        const w = Math.abs(box.x1 - box.x0);
+        const h = Math.abs(box.y1 - box.y0);
+        if (w >= 30 && h >= 30) {
+          const normBox = {
+            x: Math.min(box.x0, box.x1),
+            y: Math.min(box.y0, box.y1),
+            w,
+            h,
+          };
+          setIsCropping(false);
+          setCropBox(null);
+          handleOpenExport(normBox);
+          return;
+        }
+      }
+      setCropBox(null);
+      return;
+    }
     dragRef.current = null;
   };
 
@@ -1003,6 +1255,18 @@ export default function ForensicApp() {
     const r = cv.getBoundingClientRect();
     const mx = e.clientX - r.left;
     const my = e.clientY - r.top;
+
+    if (isCropping && cropStartRef.current) {
+      const clampX = Math.max(0, Math.min(W, mx));
+      const clampY = Math.max(0, Math.min(Hh, my));
+      setCropBox({
+        x0: cropStartRef.current.x,
+        y0: cropStartRef.current.y,
+        x1: clampX,
+        y1: clampY,
+      });
+      return;
+    }
 
     // Update live coordinate HUD
     const rx = (mx - W / 2) / view.s + view.cx;
@@ -1272,7 +1536,7 @@ export default function ForensicApp() {
       >
         <canvas
           ref={canvasRef}
-          className="map-canvas"
+          className={`map-canvas ${isCropping ? 'crop-active' : ''}`}
           role="img"
           aria-label="Peta sebaran hotspot forensik VIIRS 375 m"
           onPointerDown={handlePointerDown}
@@ -1295,6 +1559,66 @@ export default function ForensicApp() {
           playing={playing}
           particleCount={windDensity}
         />
+
+        {/* Overlay Mode Tangkapan Layar & Marquee Box */}
+        {isCropping && (
+          <div className="crop-screen-overlay">
+            <div className="crop-banner">
+              <div className="crop-banner-info">
+                <Camera size={16} style={{ color: 'var(--ca)' }} />
+                <span>
+                  <b>Mode Tangkapan Layar Forensik</b> — Klik dan seret (drag) pada peta untuk menandai area ekspor.
+                </span>
+              </div>
+              <div className="crop-banner-actions">
+                <button
+                  type="button"
+                  className="crop-action-btn primary"
+                  onClick={() => {
+                    const { W, Hh } = sizeRef.current;
+                    setIsCropping(false);
+                    setCropBox(null);
+                    handleOpenExport({ x: 0, y: 0, w: W, h: Hh });
+                  }}
+                  title="Ekspor seluruh tampilan layar peta saat ini"
+                >
+                  Tangkap Seluruh Layar
+                </button>
+                <button
+                  type="button"
+                  className="crop-action-btn"
+                  onClick={() => {
+                    setIsCropping(false);
+                    setCropBox(null);
+                  }}
+                >
+                  Batal (Esc)
+                </button>
+              </div>
+            </div>
+
+            {cropBox && (
+              <div
+                className="crop-marquee"
+                style={{
+                  left: `${Math.min(cropBox.x0, cropBox.x1)}px`,
+                  top: `${Math.min(cropBox.y0, cropBox.y1)}px`,
+                  width: `${Math.abs(cropBox.x1 - cropBox.x0)}px`,
+                  height: `${Math.abs(cropBox.y1 - cropBox.y0)}px`,
+                }}
+              >
+                <div className="crop-dimension-tag">
+                  {Math.round(Math.abs(cropBox.x1 - cropBox.x0))} × {Math.round(Math.abs(cropBox.y1 - cropBox.y0))} px
+                  {viewRef.current.s > 0 && (
+                    <span>
+                      {' '}· ~{((Math.abs(cropBox.x1 - cropBox.x0) / viewRef.current.s) / 1000).toFixed(1)} × {((Math.abs(cropBox.y1 - cropBox.y0) / viewRef.current.s) / 1000).toFixed(1)} km
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Floating Canvas Tooltip */}
@@ -1436,6 +1760,20 @@ export default function ForensicApp() {
               <span>Unduh</span>
             </button>
           )}
+
+          {/* Screenshot & Crop Export */}
+          <button
+            type="button"
+            className={`tb-btn ${isCropping ? 'active' : ''}`}
+            onClick={() => {
+              setIsCropping((v) => !v);
+              setCropBox(null);
+            }}
+            title="Tangkapan layar & pilih area peta untuk diekspor ke PNG"
+          >
+            <Camera size={13} />
+            <span>Screenshot</span>
+          </button>
 
           {/* Switch to Demo Data */}
           {/* {!isDemo && (
@@ -1782,6 +2120,32 @@ export default function ForensicApp() {
                 Area terindikasi gambut. Pembakaran bawah permukaan (smoldering) mungkin terjadi.
               </div>
             )}
+
+            <button
+              type="button"
+              className="btn"
+              style={{
+                width: '100%',
+                marginTop: 10,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 6,
+                background: '#192430',
+                borderColor: 'var(--line-hi)',
+                color: 'var(--fg)',
+                fontSize: 12,
+                padding: '6px 12px',
+              }}
+              onClick={() => {
+                setIsCropping(true);
+                setCropBox(null);
+              }}
+              title="Tandai dan ekspor tangkapan layar untuk kluster ini"
+            >
+              <Camera size={14} style={{ color: 'var(--ca)' }} />
+              <span>Ekspor Screenshot Kluster</span>
+            </button>
           </div>
         </div>
       )}
@@ -2087,6 +2451,31 @@ export default function ForensicApp() {
                     Titik awal mencerminkan deteksi satelit pertama, bukan necessarily detik awal penyulutan api di lapangan. Tutupan awan, asap tebal, dan jeda orbit satelit dapat menunda deteksi. Pada lahan gambut dalam, pembakaran smoldering di bawah permukaan tanah dapat menyebabkan pergerakan api tidak selalu searah dengan hotspot permukaan.
                   </p>
                 </div>
+                <div>
+                  <h4 style={{ fontSize: 13, color: 'var(--ca)', marginBottom: 4 }}>
+                    5. Sumber Data Spasial Resmi (Gambut, Konsesi, & Administrasi)
+                  </h4>
+                  <p style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.5, marginBottom: 6 }}>
+                    Untuk investigasi hukum dan pembuktian karhutla, lapisan spasial dirujuk dari sumber-sumber otoritatif nasional:
+                  </p>
+                  <ul style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.6, paddingLeft: 18 }}>
+                    <li>
+                      <b style={{ color: 'var(--fg)' }}>Lahan Gambut & KHG:</b> BBSDLP Kementan 2019 (Peta Sebaran Lahan Gambut Skala 1:50.000) & Peta Kesatuan Hidrologis Gambut (KHG) BRGM / SK MenLHK No. 130/2017 (Fungsi Lindung & Budidaya Gambut).
+                    </li>
+                    <li>
+                      <b style={{ color: 'var(--fg)' }}>Konsesi Kelapa Sawit (HGU):</b> Portal Bhumi ATR/BPN, didukung basis data konsesi spasial terbuka Auriga Nusantara dan Greenpeace Indonesia.
+                    </li>
+                    <li>
+                      <b style={{ color: 'var(--fg)' }}>Konsesi Kehutanan (PBPH / IUPHHK):</b> WebGIS Kehutanan / SIGAP KLHK (PBPH Hutan Alam, PBPH Hutan Tanaman Industri / HTI, dan Restorasi Ekosistem).
+                    </li>
+                    <li>
+                      <b style={{ color: 'var(--fg)' }}>Konsesi Pertambangan (IUP):</b> MOMI (Minerba One Map Indonesia) Ditjen Minerba - Kementerian ESDM.
+                    </li>
+                    <li>
+                      <b style={{ color: 'var(--fg)' }}>Batas Wilayah Administrasi:</b> Ina-Geoportal / Peta Rupa Bumi Indonesia (RBI) 1:25.000 / 1:50.000 Badan Informasi Geospasial (BIG).
+                    </li>
+                  </ul>
+                </div>
               </div>
             </div>
 
@@ -2098,6 +2487,143 @@ export default function ForensicApp() {
               >
                 Mengerti
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Dialog: Export Screenshot Preview & Download */}
+      {showExportModal && (
+        <div className="modal-backdrop" onClick={() => setShowExportModal(false)}>
+          <div
+            className="modal-card"
+            style={{ maxWidth: 740 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="panel-header">
+              <div className="panel-title">
+                <Camera size={16} style={{ color: 'var(--ca)' }} />
+                <span>Ekspor Tangkapan Layar Forensik (PNG)</span>
+              </div>
+              <button
+                type="button"
+                className="panel-close"
+                onClick={() => setShowExportModal(false)}
+                title="Tutup dialog"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="modal-body">
+              {/* Preview Container */}
+              <div className="export-preview-box">
+                {screenshotPreviewUrl ? (
+                  <img
+                    src={screenshotPreviewUrl}
+                    alt="Pratinjau tangkapan layar forensik"
+                    className="export-preview-img"
+                  />
+                ) : (
+                  <div style={{ color: 'var(--muted)', fontSize: 12 }}>
+                    Membuat pratinjau resolusi tinggi...
+                  </div>
+                )}
+                {screenshotCropBox && (
+                  <div className="export-preview-badge">
+                    {Math.round(screenshotCropBox.w)} × {Math.round(screenshotCropBox.h)} px
+                  </div>
+                )}
+              </div>
+
+              {/* Options & Metadata */}
+              <div className="export-options-grid">
+                <label className="export-check-item">
+                  <input
+                    type="checkbox"
+                    checked={exportWatermark}
+                    onChange={(e) => {
+                      const nextVal = e.target.checked;
+                      setExportWatermark(nextVal);
+                      generateForensicScreenshot(screenshotCropBox, { watermark: nextVal });
+                    }}
+                  />
+                  <span><b>Cap Metadata Forensik & Watermark Resmi</b> (ID Kluster, Tanggal WIB, Titik Awal, dan Cuaca ERA5)</span>
+                </label>
+
+                <label className="export-check-item">
+                  <input
+                    type="checkbox"
+                    checked={exportWind}
+                    disabled={!layers.wind}
+                    onChange={(e) => {
+                      const nextVal = e.target.checked;
+                      setExportWind(nextVal);
+                      generateForensicScreenshot(screenshotCropBox, { wind: nextVal });
+                    }}
+                  />
+                  <span>Sertakan Aliran Vektor Angin & Bara Api (ERA5 10m)</span>
+                </label>
+
+                <label className="export-check-item">
+                  <input
+                    type="checkbox"
+                    checked={exportScale}
+                    onChange={(e) => {
+                      const nextVal = e.target.checked;
+                      setExportScale(nextVal);
+                      generateForensicScreenshot(screenshotCropBox, { scale: nextVal });
+                    }}
+                  />
+                  <span>Sertakan Skala Jarak Peta (km) & Arah Mata Angin (↑ U)</span>
+                </label>
+              </div>
+
+              {/* Filename Input */}
+              <div className="export-filename-row">
+                <label htmlFor="export-filename">Nama Berkas:</label>
+                <input
+                  id="export-filename"
+                  type="text"
+                  className="export-filename-input"
+                  value={exportFilename}
+                  onChange={(e) => setExportFilename(e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="modal-footer" style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => {
+                  setShowExportModal(false);
+                  setIsCropping(true);
+                  setCropBox(null);
+                }}
+                title="Ulangi pilih area secara manual"
+              >
+                <Crop size={14} style={{ marginRight: 6 }} />
+                Ulangi Pilih Area
+              </button>
+
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => setShowExportModal(false)}
+                >
+                  Batal
+                </button>
+                <button
+                  type="button"
+                  className="btn primary"
+                  onClick={handleDownloadScreenshot}
+                >
+                  <Download size={14} style={{ marginRight: 6 }} />
+                  Unduh Berkas PNG
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -2238,6 +2764,17 @@ export default function ForensicApp() {
             title="Lihat seluruh data hotspot"
           >
             <Globe size={15} />
+          </button>
+          <button
+            type="button"
+            className={isCropping ? 'active' : ''}
+            onClick={() => {
+              setIsCropping((v) => !v);
+              setCropBox(null);
+            }}
+            title="Tangkapan Layar & Seleksi Area (Screenshot PNG)"
+          >
+            <Camera size={15} />
           </button>
           <button
             type="button"
