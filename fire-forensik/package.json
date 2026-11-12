@@ -1,0 +1,18 @@
+{
+  "name": "fire-forensik-kalbar",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3001 -H 0.0.0.0",
+    "build": "next build",
+    "start": "next start -p 3001 -H 0.0.0.0"
+  },
+  "dependencies": {
+    "lucide-react": "^0.460.0",
+    "next": "14.2.24",
+    "pg": "^8.13.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  }
+}
+

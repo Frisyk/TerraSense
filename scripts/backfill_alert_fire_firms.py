@@ -84,11 +84,10 @@ except Exception:
 # --------------------------------------------------------------------------
 SCHEMA = "monitoring"
 
-# API token & extent — loaded dynamically from system.setting at startup
-# (with hardcoded fallbacks so backfill can run standalone without DB settings)
+# API token & extent — default khusus Kalimantan Barat (pure raw)
 DEFAULT_TOKEN  = "70e8e413e8f4661fb7479c384395c2f8"
-DEFAULT_EXTENT = "108,-4.2,119.3,4.5"
-# Kalau nanti mau 1 Indonesia: "94.9,-11.1,141.1,6.1"
+DEFAULT_EXTENT = "108.5,-3.2,114.3,2.3"  # BBOX Kalimantan Barat (lon_min,lat_min,lon_max,lat_max)
+# Seluruh Kalimantan: "108,-4.2,119.3,4.5" | Seluruh Indonesia: "94.9,-11.1,141.1,6.1"
 
 # Module globals, populated in async main()
 TOKEN  = DEFAULT_TOKEN
@@ -592,32 +591,45 @@ def intersect_window(source_key, start, end, lc, lc_year):
 async def main():
     global TOKEN, EXTENT
     TOKEN = await get_firms_token(DEFAULT_TOKEN)
-    EXTENT = await get_target_extent(DEFAULT_EXTENT)
-    print(f"[config] TOKEN={TOKEN[:6]}..., EXTENT={EXTENT}")
 
-    ap = argparse.ArgumentParser(description="Backfill historis FIRMS — Kalimantan")
-    ap.add_argument("--start", default="2010-01-01", help="Tanggal mulai YYYY-MM-DD (default 2010-01-01)")
+    ap = argparse.ArgumentParser(description="Backfill FIRMS Pure Raw — Kalimantan Barat (5 bulan terakhir)")
+    ap.add_argument("--months", type=int, default=5, help="Jumlah bulan ke belakang jika --start tidak diisi (default: 5)")
+    ap.add_argument("--start", default=None, help="Tanggal mulai YYYY-MM-DD (default: 5 bulan ke belakang dari --end)")
     ap.add_argument("--end", default=str(date.today()), help="Tanggal akhir YYYY-MM-DD (default hari ini)")
-    ap.add_argument("--source", default="all", choices=["all"] + list(SOURCES))
+    ap.add_argument("--extent", default=DEFAULT_EXTENT, help=f"BBox lon_min,lat_min,lon_max,lat_max (default Kalbar: {DEFAULT_EXTENT})")
+    ap.add_argument("--source", default="viirs", choices=["all", "viirs"] + list(SOURCES),
+                    help="Sumber sensor: 'viirs' (snpp+noaa20+noaa21), 'all' (+modis), atau satu sumber (default: viirs)")
     ap.add_argument("--resume", action="store_true", help="Lanjut dari checkpoint")
-    ap.add_argument("--raw-only", action="store_true", help="Download ke tabel _raw saja, tanpa intersect")
+    ap.add_argument("--raw-only", action="store_true", default=True,
+                    help="Download ke tabel _raw saja tanpa intersect/enrichment (AKTIF secara default)")
+    ap.add_argument("--with-intersect", action="store_true",
+                    help="Aktifkan intersect ke concession / village / landcover (opsional)")
     ap.add_argument("--reintersect", action="store_true",
                     help="Tidak download; bangun ulang tabel final dari tabel _raw yang sudah ada")
     args = ap.parse_args()
 
-    start_date = date.fromisoformat(args.start)
-    end_date = date.fromisoformat(args.end)
-    checkpoint = load_checkpoint() if args.resume else {}
-    sources = list(SOURCES) if args.source == "all" else [args.source]
+    EXTENT = args.extent
+    raw_only = not args.with_intersect and not args.reintersect
+    print(f"[config] TOKEN={TOKEN[:6]}..., EXTENT={EXTENT} (Kalbar)")
 
-    lc = detect_landcover_schema()
+    end_date = date.fromisoformat(args.end)
+    start_date = date.fromisoformat(args.start) if args.start else (end_date - timedelta(days=args.months * 30))
+    checkpoint = load_checkpoint() if args.resume else {}
+    if args.source == "all":
+        sources = list(SOURCES)
+    elif args.source == "viirs":
+        sources = ["viirssnpp", "viirsnoaa20", "viirsnoaa21"]
+    else:
+        sources = [args.source]
+
+    lc = {"mode": "none", "columns": {}, "years": []} if raw_only else detect_landcover_schema()
     avail = {} if args.reintersect else fetch_availability()
 
     print(f"\n{'='*72}")
-    print(f"FIRMS backfill Kalimantan | {start_date} -> {end_date}")
+    print(f"FIRMS Backfill Kalbar (Pure Raw) | {start_date} -> {end_date}")
+    print(f"Extent     : {EXTENT}")
     print(f"Sources    : {', '.join(sources)}")
-    print(f"Landcover  : mode={lc['mode']} tahun tersedia={lc['years']}")
-    print(f"Mode       : {'reintersect' if args.reintersect else ('raw-only' if args.raw_only else 'full')}")
+    print(f"Mode       : {'pure raw (tanpa intersect/enrichment)' if raw_only else ('reintersect' if args.reintersect else 'full intersect')}")
     print(f"{'='*72}")
 
     grand_raw = grand_final = 0
@@ -681,7 +693,7 @@ async def main():
                             r = insert_raw(proc, raw_table)
                             ensure_raw_index(raw_table)
                             n_raw += r
-                            if args.raw_only:
+                            if raw_only:
                                 print(f"raw {r}")
                             else:
                                 f = intersect_window(src, chunk_start, chunk_end, lc, lc_year)

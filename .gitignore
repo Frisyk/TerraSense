@@ -1,10 +1,41 @@
-.env
-frontend/.next
-frontend/node_modules
-frontend/.env*.local
-backend/__pycache__
-__pycache__
-*.pyc
+# Environment & Credentials
 .env
 .env.*
 !.env.example
+*.env
+*.env.local
+
+# Frontend Next.js
+frontend/.next
+frontend/node_modules
+frontend/.env*.local
+
+# Fire Forensik Next.js
+fire-forensik/.next/
+fire-forensik/node_modules/
+fire-forensik/out/
+fire-forensik/.env*.local
+fire-forensik/.env
+
+# Python & Cache
+backend/__pycache__
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Local Export & Output Artifacts
+scripts/out/
+*.zip
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+*.geojson
+Jejak Hotspot Kalbar*.html
+
+# OS Files
+.DS_Store
+Thumbs.db

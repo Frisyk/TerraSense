@@ -114,7 +114,32 @@ SELECT count(*) FROM monitoring.alert_fire_sipongi_raw;
 
 ---
 
-## 5. Konfigurasi Environment (`.env`)
+## 5. Web App Forensik Sebaran Api & Vektor Angin (`fire-forensik`)
+
+Web App investigasi forensik kebakaran hutan tingkat sub-piksel (375 m) di Kalimantan Barat:
+👉 **`cd fire-forensik && npm run dev`** (akses di `http://localhost:3000`)
+
+### Fitur Unggulan Forensik & Iklim:
+1. **Full-screen Edge-to-Edge Map (`100vw × 100vh`)**: Kanvas peta penuh dengan floating tool popups (Daftar Kejadian, Detail Metrik, Layer, Legenda, Kompas HUD, Timeline Dock, Map Nav Stack).
+2. **Rekonstruksi Pohon Sebaran Api (*Propagation Tree*)**: Menemukan titik awal penyulutan (*root hotspot*), rantai penjalaran api antar lintasan satelit, dan estimasi luas area terbakar (*Concave Alpha Shape*).
+3. **Uji Kestabilan Monte Carlo**: Uji ketahanan posisi satelit (perturbasi koordinat ±187,5 m dan FRP ±20%) untuk mengukur stabilitas titik awal.
+4. **Animasi Streamline Angin 60fps & Bara Api (*Fire Embers*)**: 550 partikel vektor angin halus dengan interpolasi IDW (Inverse-Distance Weighting), gradasi warna 6 tingkat kecepatan angin meteorologi, dan percikan bara api yang terhembus searah angin.
+5. **Sinkronisasi Cuaca & FWI ERA5**: Menampilkan kecepatan angin 10m, suhu, kelembapan relatif (RH), curah hujan 24 jam, dan Fire Weather Index (FWI) yang disinkronkan langsung pada jam lintasan satelit.
+6. **Smart Initial Windowing & Paginasi Klaster**: Pemuatan instan (< 1 detik) untuk 7 hari terkini, paginasi kejadian di panel daftar, dan tombol pintas (*quick presets*) di dialog Query Database.
+7. **Pilihan 9 Basemap Lengkap**: Dark Matter, Positron, Voyager, OSM Standard, OpenTopoMap, Esri World Imagery, Esri National Geographic, Google Satellite, Google Hybrid.
+
+---
+
+## 6. Pipeline Skrip & Utilitas (`scripts/`)
+
+- `scripts/backfill_climate_history.py`: Unduh data iklim historis ERA5 (0.25° / ~27.5 km) dari Open-Meteo Archive, hitung komponen angin $(u, v)$ dan indeks FWI harian, lalu simpan ke `monitoring.climate_history`.
+- `scripts/migrate_all_to_supabase.py`: Migrasi 625.000+ baris data titik api VIIRS (SNPP, NOAA-20, NOAA-21) dan SIPONGI dari PostgreSQL lokal ke remote Supabase PostGIS.
+- `scripts/convert_geojson_to_shp.py`: Konversi GeoJSON hasil analisis forensik ke format Shapefile terkompresi ZIP untuk diunggah sebagai Asset Google Earth Engine (GEE).
+- `scripts/forensik.py`: Mesin kalkulasi forensik lokal dan ekspor JSON/GeoJSON.
+
+---
+
+## 7. Konfigurasi Environment (`.env`)
 
 File konfigurasi `.env` telah disediakan dengan konfigurasi standar:
 - `POSTGRES_DB`: Nama database (default: `geonode_data`)
